@@ -1,0 +1,27 @@
+import {readingRuns,romanize} from './parser.mjs';
+import {initialState,setText,setAnnotation,removeAnnotation,setPrefs,parseBackup,makeBackup,EXERCISES,checkAnswer,recordAnswer,MAX_TEXT,MAX_BACKUP,STORAGE_KEY} from './state.mjs';
+const $=id=>document.getElementById(id), el=(name,txt)=>{const e=document.createElement(name);if(txt!==undefined)e.textContent=txt;return e};
+let s=initialState(), lock=false, pending=null, pos=0, queue=[], done=false;
+try{const raw=localStorage.getItem(STORAGE_KEY);if(raw!==null)s=parseBackup(raw)}catch{lock=true;$('storage').textContent='無法讀取先前資料，自動儲存已暫停。可下載本次備份；確認還原有效備份後才恢復儲存。'}
+function save(next){s=next;if(!lock)try{localStorage.setItem(STORAGE_KEY,makeBackup(s));$('storage').textContent=''}catch{$('storage').textContent='無法寫入本機儲存空間。這次變更只在記憶體中，請下載備份。'}}
+const note=t=>{$('notice').textContent=t};
+function ruby(base,hint){if(base.length>6||hint.length>18){const box=el('span');box.className='longrun';box.append(el('small',hint),el('span',base));return box}const r=el('ruby',base);r.append(el('rt',hint));return r}
+function paint(){const p=$('page');p.className=s.prefs.size;p.replaceChildren();const plain=t=>p.append(document.createTextNode(t));function run(t){for(const x of readingRuns(t))if(x.reading!==null)p.append(ruby(x.source,x.reading));else plain(x.source)}
+if(!s.text)plain('尚未加入原文');else if(!s.prefs.hints)plain(s.text);else{let i=0;for(const a of s.annotations){run(s.text.slice(i,a.start));p.append(ruby(s.text.slice(a.start,a.end),a.reading+' · '+romanize(a.reading)));i=a.end}run(s.text.slice(i))}
+document.documentElement.dataset.theme=s.prefs.theme;$('theme').value=s.prefs.theme;$('size').value=s.prefs.size;$('hints').textContent=s.prefs.hints?'隱藏讀音提示':'顯示讀音提示';$('hints').setAttribute('aria-pressed',String(s.prefs.hints));
+const list=$('annotations');list.replaceChildren();for(const a of s.annotations){const line=el('div'),edit=el('button','編輯'),del=el('button','移除');line.className='entry';line.append(el('span',s.text.slice(a.start,a.end)+'：'+a.reading),edit,del);list.append(line);edit.onclick=()=>{if($('source').value!==s.text)return note('請先套用草稿。');$('source').focus();$('source').setSelectionRange(a.start,a.end);$('reading').value=a.reading;$('reading').focus()};del.onclick=()=>{save(removeAnnotation(s,a.start,a.end));paint();note('已移除標音。')}}}
+$('source').maxLength=MAX_TEXT;$('source').value=s.text;
+$('apply').onclick=()=>{try{const t=$('source').value;if(t!==s.text&&s.annotations.length&&!confirm('改動原文會移除所有舊標音，確定套用？'))return;save(setText(s,t));paint();note('已套用原文。')}catch(e){note(e.message)}};
+$('example').onclick=()=>{if($('source').value!==s.text&&!confirm('以例句取代尚未套用的草稿？'))return;$('source').value='月が きれい。\nきゃくは、スーパーで まっちゃを かう。';note('例句已加入草稿。套用後可選取「月」，標註「つき」。')};
+$('add').onclick=()=>{try{const t=$('source');if(t.value!==s.text)return note('請先套用草稿，再選取原文中的漢字。');save(setAnnotation(s,t.selectionStart,t.selectionEnd,$('reading').value));$('reading').value='';paint();note('已儲存標音。')}catch(e){note(e.message)}};
+for(const id of ['size','theme'])$(id).onchange=()=>{save(setPrefs(s,{[id]:$(id).value}));paint()};
+$('hints').onclick=()=>{save(setPrefs(s,{hints:!s.prefs.hints}));paint()};
+for(const b of document.querySelectorAll('[data-tab]'))b.onclick=()=>{for(const x of document.querySelectorAll('[data-tab]')){const on=x===b;$(x.dataset.tab).hidden=!on;x.setAttribute('aria-pressed',String(on))}note('');if(b.dataset.tab==='practice')resetDeck()};
+function resetDeck(){queue=EXERCISES.filter(q=>$('deck').value==='all'||s.mistakes.includes(q.id));pos=0;showCard()}
+function showCard(){const q=queue[pos];done=false;$('answer').value='';$('feedback').textContent='';$('progress').textContent=q?(pos+1)+' / '+queue.length:'0 / 0';$('card').textContent=q?q.prompt:'目前沒有錯題';$('card').lang=q?'ja':'zh-Hant';for(const id of ['answer','check','reveal','next'])$(id).disabled=!q}
+$('deck').onchange=resetDeck;
+function respond(reveal){const q=queue[pos];if(!q||done)return;const val=$('answer').value;if(!reveal&&!val.trim()){return $('feedback').textContent='先輸入答案，或選擇揭曉。'}const ok=!reveal&&checkAnswer(q.id,val);save(recordAnswer(s,q.id,ok));done=true;$('check').disabled=$('reveal').disabled=true;$('feedback').textContent=(ok?'答對了！':'已加入錯題。')+' '+q.answer+'　／　'+q.focus}
+$('check').onclick=()=>respond(false);$('reveal').onclick=()=>respond(true);$('answer').onkeydown=e=>{if(e.key==='Enter'&&!e.isComposing)respond(false)};$('next').onclick=()=>{if(++pos>=queue.length)resetDeck();else showCard()};
+$('download').onclick=()=>{const u=URL.createObjectURL(new Blob([makeBackup(s)],{type:'application/json'})),a=el('a');a.href=u;a.download='kana-layer-backup.json';a.click();setTimeout(()=>URL.revokeObjectURL(u),3000);note('已準備下載目前已套用的讀本。')};
+let rev=0;$('file').onchange=async()=>{const r=++rev,f=$('file').files[0];pending=null;$('restore').disabled=true;$('preview').textContent='';if(!f)return;try{if(f.size>MAX_BACKUP)throw Error('備份檔太大。');const obj=parseBackup(await f.text());if(r!==rev)return;pending=obj;$('preview').textContent='預覽：'+obj.text.length+' 個文字單位、'+obj.annotations.length+' 筆標音、'+obj.mistakes.length+' 道錯題。\n'+obj.text.slice(0,180);$('restore').disabled=false}catch(e){if(r===rev)$('preview').textContent=e.message}};
+$('restore').onclick=()=>{if(!pending||!confirm('以預覽資料取代目前原文、草稿、標音、偏好及錯題？建議先下載目前備份。'))return;lock=false;save(pending);pending=null;$('file').value='';$('restore').disabled=true;$('preview').textContent='';$('source').value=s.text;paint();note('已還原讀本。')};paint();
